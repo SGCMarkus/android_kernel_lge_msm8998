@@ -787,6 +787,109 @@ void binder_alloc_vma_close(struct binder_alloc *alloc)
 }
 
 /**
+ * binder_alloc_free_page() - shrinker callback to free pages
+ * @item:   item to free
+ * @lock:   lock protecting the item
+ * @cb_arg: callback argument
+ *
+ * Called from list_lru_walk() in binder_shrink_scan() to free
+ * up pages when the system is under memory pressure.
+ */
+enum lru_status binder_alloc_free_page(struct list_head *item,
+				       struct list_lru_one *lru,
+				       spinlock_t *lock,
+				       void *cb_arg)
+{
+	struct mm_struct *mm = NULL;
+	struct binder_lru_page *page = container_of(item,
+						    struct binder_lru_page,
+						    lru);
+	struct binder_alloc *alloc;
+	uintptr_t page_addr;
+	size_t index;
+	struct vm_area_struct *vma;
+
+	alloc = page->alloc;
+	if (!mutex_trylock(&alloc->mutex))
+		goto err_get_alloc_mutex_failed;
+
+	if (!page->page_ptr)
+		goto err_page_already_freed;
+
+	index = page - alloc->pages;
+	page_addr = (uintptr_t)alloc->buffer + index * PAGE_SIZE;
+	vma = alloc->vma;
+	if (vma) {
+		mm = get_task_mm(alloc->tsk);
+		if (!mm)
+			goto err_get_task_mm_failed;
+		if (!down_write_trylock(&mm->mmap_sem))
+			goto err_down_write_mmap_sem_failed;
+	}
+
+	list_lru_isolate(lru, item);
+	spin_unlock(lock);
+
+	if (vma) {
+		trace_binder_unmap_user_start(alloc, index);
+
+		zap_page_range(vma,
+			       page_addr +
+			       alloc->user_buffer_offset,
+			       PAGE_SIZE, NULL);
+
+		trace_binder_unmap_user_end(alloc, index);
+
+		up_write(&mm->mmap_sem);
+		mmput(mm);
+	}
+
+	trace_binder_unmap_kernel_start(alloc, index);
+
+	unmap_kernel_range(page_addr, PAGE_SIZE);
+	__free_page(page->page_ptr);
+	page->page_ptr = NULL;
+
+	trace_binder_unmap_kernel_end(alloc, index);
+
+	spin_lock(lock);
+	mutex_unlock(&alloc->mutex);
+	return LRU_REMOVED_RETRY;
+
+err_down_write_mmap_sem_failed:
+	mmput_async(mm);
+err_get_task_mm_failed:
+err_page_already_freed:
+	mutex_unlock(&alloc->mutex);
+err_get_alloc_mutex_failed:
+	return LRU_SKIP;
+}
+
+static unsigned long
+binder_shrink_count(struct shrinker *shrink, struct shrink_control *sc)
+{
+	unsigned long ret = list_lru_count(&binder_alloc_lru);
+	return ret;
+}
+
+static unsigned long
+binder_shrink_scan(struct shrinker *shrink, struct shrink_control *sc)
+{
+	unsigned long ret;
+
+	ret = list_lru_walk(&binder_alloc_lru, binder_alloc_free_page,
+			    NULL, sc->nr_to_scan);
+	return ret;
+}
+
+struct shrinker binder_shrinker = {
+	.count_objects = binder_shrink_count,
+	.scan_objects = binder_shrink_scan,
+	.seeks = DEFAULT_SEEKS,
+};
+
+/**
+
  * binder_alloc_init() - called by binder_open() for per-proc initialization
  * @alloc: binder_alloc for this proc
  *
