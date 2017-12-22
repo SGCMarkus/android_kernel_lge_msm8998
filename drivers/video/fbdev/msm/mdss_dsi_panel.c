@@ -234,6 +234,11 @@ static struct dsi_cmd_desc backlight_cmd = {
 	led_pwm1
 };
 
+static char led_pwm2[3] = {0x51, 0x00, 0x00};	/* DTYPE_DCS_LWRITE */
+static struct dsi_cmd_desc backlight_cmd2 = {
+	{DTYPE_DCS_LWRITE, 1, 0, 0, 1, sizeof(led_pwm2)},
+	led_pwm2
+};
 static void mdss_dsi_panel_bklt_dcs(struct mdss_dsi_ctrl_pdata *ctrl, int level)
 {
 	struct dcs_cmd_req cmdreq;
@@ -247,10 +252,28 @@ static void mdss_dsi_panel_bklt_dcs(struct mdss_dsi_ctrl_pdata *ctrl, int level)
 
 	pr_debug("%s: level=%d\n", __func__, level);
 
-	led_pwm1[1] = (unsigned char)level;
+	if (ctrl->bklt_max > 255) {
+		u8 hdata, ldata;
+
+		/* Scale the brightness to our max */
+		level = (level * ctrl->bklt_max) / 255;
+
+		if (ctrl->bl_high2bit) {
+			ldata = level;
+			hdata = (level >> 8) & 0x3;
+		} else {
+			ldata = level & 0x3;
+			hdata = level >> 2;
+		}
+
+		led_pwm2[1] = hdata;
+		led_pwm2[2] = ldata;
+	} else {
+		led_pwm1[1] = (unsigned char)level;
+	}
 
 	memset(&cmdreq, 0, sizeof(cmdreq));
-	cmdreq.cmds = &backlight_cmd;
+	cmdreq.cmds = ctrl->bklt_max > 255 ? &backlight_cmd2 : &backlight_cmd;
 	cmdreq.cmds_cnt = 1;
 	cmdreq.flags = CMD_REQ_COMMIT | CMD_CLK_CTRL;
 	cmdreq.rlen = 0;
@@ -3034,6 +3057,11 @@ static int mdss_panel_parse_dt(struct device_node *np,
 	if (rc)
 		pinfo->esc_clk_rate_hz = MDSS_DSI_MAX_ESC_CLK_RATE_HZ;
 	pr_debug("%s: esc clk %d\n", __func__, pinfo->esc_clk_rate_hz);
+
+	ctrl_pdata->bl_high2bit = of_property_read_bool(np,
+					"qcom,mdss-bl-high2bit");
+
+	mdss_livedisplay_parse_dt(np, pinfo);
 
 	return 0;
 
