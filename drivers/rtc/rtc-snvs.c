@@ -95,6 +95,7 @@ static int rtc_read_lp_counter_lsb(struct snvs_rtc_data *data, u32 *lsb)
 	if (!timeout) {
 		dev_err(&data->rtc->dev, "Timeout trying to get valid LPSRT Counter read\n");
 		return -ETIMEDOUT;
+
 	}
 
 	*lsb = count1;
