@@ -33,7 +33,9 @@ module_param(input_boost_duration, short, 0644);
 #define INPUT_BOOST		BIT(1)
 #define WAKE_BOOST		BIT(2)
 #define MAX_BOOST		BIT(3)
-#define GPU_BOOST		BIT(4)
+
+
+
 
 struct boost_drv {
 	struct workqueue_struct *wq;
@@ -48,6 +50,8 @@ struct boost_drv {
 	atomic64_t max_boost_expires;
 	atomic_t max_boost_dur;
 	atomic_t state;
+	spinlock_t lock;
+
 };
 
 static struct boost_drv *boost_drv_g;
@@ -387,8 +391,7 @@ static int __init cpu_input_boost_init(void)
 	INIT_DELAYED_WORK(&b->input_unboost, input_unboost_worker);
 	INIT_WORK(&b->max_boost, max_boost_worker);
 	INIT_DELAYED_WORK(&b->max_unboost, max_unboost_worker);
-	INIT_WORK(&b->gpu_boost, gpu_boost_worker);
-	INIT_WORK(&b->gpu_unboost, gpu_unboost_worker);
+
 	atomic_set(&b->state, 0);
 
 	b->cpu_notif.notifier_call = cpu_notifier_cb;
