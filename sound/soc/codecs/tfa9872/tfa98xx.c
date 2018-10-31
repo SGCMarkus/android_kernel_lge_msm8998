@@ -48,6 +48,13 @@
 #include "tfa_container.h"
 #include "tfa98xx_parameters.h"
 
+#ifdef CONFIG_TOUCHSCREEN_SCROFF_VOLCTR
+#include <linux/input/scroff_volctr.h>
+#include <linux/tfa98xx_notifier.h>
+
+static DEFINE_MUTEX(tfa98xx_state_lock);
+#endif
+
 #define TFA98XX_VERSION	TFA98XX_API_REV_STR
 
 /* Change volume selection behavior:
@@ -2870,6 +2877,12 @@ static void tfa98xx_dsp_init(struct tfa98xx *tfa98xx)
 		return;
 	}
 
+#ifdef CONFIG_TOUCHSCREEN_SCROFF_VOLCTR
+	mutex_lock(&tfa98xx_state_lock);
+	tfa98xx_notifier_call_chain(TFA98XX_EVENT_PLAYING, NULL);
+	mutex_unlock(&tfa98xx_state_lock);
+#endif
+
 	mutex_lock(&tfa98xx->dsp_lock);
 	pr_info("%s: ... \n", __func__);
 
@@ -3263,6 +3276,12 @@ static int tfa98xx_mute(struct snd_soc_dai *dai, int mute, int stream)
 	struct tfa98xx *tfa98xx = snd_soc_codec_get_drvdata(codec);
 
 	dev_dbg(&tfa98xx->i2c->dev, "%s: state: %d (stream = %d)\n", __func__, mute, stream);
+
+#ifdef CONFIG_TOUCHSCREEN_SCROFF_VOLCTR
+	mutex_lock(&tfa98xx_state_lock);
+	tfa98xx_notifier_call_chain(TFA98XX_EVENT_STOPPED, NULL);
+	mutex_unlock(&tfa98xx_state_lock);
+#endif
 
 	if (!(tfa98xx->flags & TFA98XX_FLAG_DSP_START_ON_MUTE))
 		return 0;
