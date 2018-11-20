@@ -134,6 +134,7 @@ config PM_AUTOSLEEP
 
 config PM_SUSPEND_BG_SYNC
 	bool "Background sync in supsend"
+	depends on !SUSPEND_SKIP_SYNC
 	def_bool y
 
 config PM_WAKELOCKS
