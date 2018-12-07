@@ -38,6 +38,34 @@ static void __devfreq_boost_kick(struct boost_dev *b)
 	queue_work(b->wq, &b->input_boost);
 }
 
+static void __devfreq_boost_kick_gpu(struct boost_dev *b)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&b->lock, flags);
+	if (!b->df || b->disable) {
+		spin_unlock_irqrestore(&b->lock, flags);
+		return;
+	}
+	spin_unlock_irqrestore(&b->lock, flags);
+
+	queue_work(b->wq, &b->input_boost_gpu);
+}
+
+static void __devfreq_unboost_gpu(struct boost_dev *b)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&b->lock, flags);
+	if (!b->df || b->disable) {
+		spin_unlock_irqrestore(&b->lock, flags);
+		return;
+	}
+	spin_unlock_irqrestore(&b->lock, flags);
+
+	queue_work(b->wq, &b->input_unboost_gpu);
+}
+
 void devfreq_boost_kick(enum df_device device)
 {
 	struct df_boost_drv *d = df_boost_drv_g;
@@ -79,6 +107,26 @@ void devfreq_boost_kick_max(enum df_device device, unsigned int duration_ms)
 		return;
 
 	__devfreq_boost_kick_max(d->devices + device, duration_ms);
+}
+
+void devfreq_boost_kick_gpu(enum df_device device)
+{
+	struct df_boost_drv *d = df_boost_drv_g;
+
+	if (!d)
+		return;
+
+	__devfreq_boost_kick_gpu(d->devices + device);
+}
+
+void devfreq_unboost_gpu(enum df_device device)
+{
+	struct df_boost_drv *d = df_boost_drv_g;
+
+	if (!d)
+		return;
+
+	__devfreq_unboost_gpu(d->devices + device);
 }
 
 void devfreq_register_boost_device(enum df_device device, struct devfreq *df)
@@ -248,6 +296,36 @@ static void devfreq_max_unboost(struct work_struct *work)
 	mutex_unlock(&df->lock);
 }
 
+static void devfreq_input_boost_gpu(struct work_struct *work)
+{
+	struct boost_dev *b = container_of(work, typeof(*b), input_boost_gpu);
+	struct devfreq *df = b->df;
+	unsigned long boost_freq, flags;
+
+	spin_lock_irqsave(&b->lock, flags);
+	boost_freq = b->boost_freq;
+	spin_unlock_irqrestore(&b->lock, flags);
+
+	mutex_lock(&df->lock);
+	if (df->max_freq)
+		df->min_freq = min(boost_freq, df->max_freq);
+	else
+		df->min_freq = boost_freq;
+	update_devfreq(df);
+	mutex_unlock(&df->lock);
+}
+
+static void devfreq_input_unboost_gpu(struct work_struct *work)
+{
+	struct boost_dev *b = container_of(work, typeof(*b), input_unboost_gpu);
+	struct devfreq *df = b->df;
+
+	mutex_lock(&df->lock);
+	df->min_freq = devfreq_abs_min_freq(b);
+	update_devfreq(df);
+	mutex_unlock(&df->lock);
+}
+
 static int fb_notifier_cb(struct notifier_block *nb,
 	unsigned long action, void *data)
 {
@@ -384,6 +462,8 @@ static int __init devfreq_boost_init(void)
 		INIT_DELAYED_WORK(&b->input_unboost, devfreq_input_unboost);
 		INIT_WORK(&b->max_boost, devfreq_max_boost);
 		INIT_DELAYED_WORK(&b->max_unboost, devfreq_max_unboost);
+		INIT_WORK(&b->input_boost_gpu, devfreq_input_boost_gpu);
+		INIT_WORK(&b->input_unboost_gpu, devfreq_input_unboost_gpu);
 	}
 
 	d->devices[DEVFREQ_MSM_CPUBW].boost_freq =
