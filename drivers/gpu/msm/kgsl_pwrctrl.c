@@ -28,6 +28,10 @@
 #include "kgsl_device.h"
 #include "kgsl_trace.h"
 
+#ifdef CONFIG_CPU_INPUT_BOOST
+#include <linux/cpu_input_boost.h>
+#endif
+
 #define KGSL_PWRFLAGS_POWER_ON 0
 #define KGSL_PWRFLAGS_CLK_ON   1
 #define KGSL_PWRFLAGS_AXI_ON   2
@@ -390,6 +394,14 @@ void kgsl_pwrctrl_pwrlevel_change(struct kgsl_device *device,
 #ifdef CONFIG_LGE_PM_CANCUN
 	gpu_power_level = pwr->pwrlevels[pwr->active_pwrlevel].gpu_freq;
 	gpu_max_power_level = pwr->pwrlevels[pwr->thermal_pwrlevel].gpu_freq;;
+#endif
+
+#ifdef CONFIG_CPU_INPUT_BOOST
+	if (CONFIG_INPUT_BOOST_GPU_FREQ != 0 &&
+	    pwr->pwrlevels[pwr->active_pwrlevel].gpu_freq >= CONFIG_INPUT_BOOST_GPU_FREQ)
+		cpu_input_boost_kick_gpu();
+	else
+		unboost_kick_gpu();
 #endif
 
 	/*
