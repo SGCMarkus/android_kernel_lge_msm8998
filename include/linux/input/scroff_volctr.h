@@ -21,12 +21,30 @@
 #ifndef _LINUX_SCROFF_VOLCTR_H
 #define _LINUX_SCROFF_VOLCTR_H
 
+#define SOVC_TOUCH_OFF_DELAY	5000	// Touch off delay time (ms)
+
 extern int sovc_switch;
 extern int sovc_tmp_onoff;
-extern bool sovc_force_off;
 extern bool track_changed;
 extern bool sovc_scr_suspended;
 
-extern void sovc_press_power_key_trigger(int delay);
+extern int sovc_ignore_start_y;
+extern int sovc_ignore_end_y;
+extern bool sovc_ignore;
+
+extern bool es9218p_playing;
+extern bool tfa9872_playing;
+extern bool sovc_tmp_userspace_playing;
+
+extern bool registered;
+
+extern struct mutex sovc_playing_state_lock;
+
+extern void unregister_sovc(void);
+
+extern bool sovc_hifi_mode;
+extern bool sovc_state_playing(void);
+
+extern unsigned int calc_feather(int coord, int prev_coord);
 
 #endif /* _LINUX_SCROFF_VOLCTR_H */

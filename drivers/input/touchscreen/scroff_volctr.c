@@ -25,7 +25,7 @@
 #include <linux/init.h>
 #include <linux/err.h>
 #include <linux/input/scroff_volctr.h>
-#include <linux/tfa98xx_notifier.h>
+#include <linux/input/sovc_notifier.h>
 #include <linux/slab.h>
 #include <linux/workqueue.h>
 #include <linux/input.h>
@@ -69,43 +69,47 @@ MODULE_LICENSE("GPLv2");
 /* Tuneables */
 #define SOVC_DEBUG			// Uncomment this to turn on the debug
 #define SOVC_DEFAULT		1	// Default On/Off
-#define SOVC_VOL_FEATHER	350	// Touch degree for volume control
+#define SOVC_VOL_FEATHER	400	// Touch degree for volume control
 #define SOVC_TRACK_FEATHER	500	// Touch degree for track control
+#define SOVC_VOL_DETERMINE_WIDTH	250	// Width range for determine volume gestures
+#define SOVC_TRACK_DETERMINE_WIDTH	300	// Width range for determine track gestures
 #define SOVC_TIME_GAP		250	// Ignore touch after this time (ms)
-#define SOVC_VOL_REEXEC_DELAY	250	// Re-exec delay for volume control (ms)
-#define SOVC_TRACK_REEXEC_DELAY	4000	// Re-exec delay for track control (ms)
-#define SOVC_AUTO_OFF_DELAY	2500	// Touch screen will be turned off when user pressing the screen (ms)
+#define SOVC_VOL_REEXEC_FIRST_DELAY	250	// First re-exec delay for volume control (ms)
+#define SOVC_VOL_REEXEC_DELAY		200	// Re-exec delay for volume control (ms)
+#define SOVC_VOL_REEXEC_DELAY_HIFI	110	// Re-exec delay for Hi-Fi volume control (ms)
+#define SOVC_TRACK_NEXT_REEXEC_DELAY		4000	// Re-exec delay for track-next control (ms)
+#define SOVC_TRACK_PREVIOUS_REEXEC_DELAY	2000	// Re-exec delay for track-previous control (ms)
 #define SOVC_KEY_PRESS_DUR	100	// Key press duration (ms)
 #define SOVC_VIB_STRENGTH	20	// Vibrator strength
 
 /* Resources */
 int sovc_switch = SOVC_DEFAULT;
 int sovc_tmp_onoff = 0;
-bool sovc_force_off = false;
 bool track_changed = false;
 bool sovc_scr_suspended = false;
-static int sovc_auto_off_delay = SOVC_AUTO_OFF_DELAY;
 static s64 touch_time_pre_x = 0, touch_time_pre_y = 0;
 static int touch_x = 0, touch_y = 0;
 static int prev_x = 0, prev_y = 0;
+int sovc_ignore_start_y = 0;
+int sovc_ignore_end_y = 0;
+bool sovc_ignore = false;
 static bool is_new_touch_x = false, is_new_touch_y = false;
 static bool is_executing = false;
-static bool sovc_auto_off_scheduled = false;
 static struct input_dev *sovc_input;
 static DEFINE_MUTEX(keyworklock);
-static DEFINE_MUTEX(auto_off_schedule_lock);
-static DEFINE_MUTEX(a2dp_lock);
 static struct workqueue_struct *sovc_volume_input_wq;
 static struct workqueue_struct *sovc_track_input_wq;
 static struct work_struct sovc_volume_input_work;
 static struct work_struct sovc_track_input_work;
-extern bool tavil_mic_detected;
 
-static void sovc_off(void);
-static void unregister_sovc(void);
+bool es9218p_playing = false;
+bool tfa9872_playing = false;
+bool sovc_tmp_userspace_playing = false;
 
-static bool registered = false;
+bool registered = false;
 static DEFINE_MUTEX(reg_lock);
+
+struct mutex sovc_playing_state_lock;
 
 enum CONTROL {
 	NO_CONTROL,
@@ -116,12 +120,13 @@ enum CONTROL {
 };
 static int control;
 
-// Vibrate when action performed
-#ifdef CONFIG_QPNP_HAPTIC
-extern void qpnp_hap_td_enable(int value);
-#endif
-
 static void scroff_volctr_key_delayed_trigger(void);
+
+bool sovc_hifi_mode = false;
+bool sovc_state_playing(void)
+{
+	return 	sovc_switch & (track_changed | sovc_tmp_onoff);
+}
 
 /* Read cmdline for sovc */
 static int __init read_sovc_cmdline(char *sovc)
@@ -138,27 +143,6 @@ static int __init read_sovc_cmdline(char *sovc)
 	return 1;
 }
 __setup("sovc=", read_sovc_cmdline);
-
-/* Turn off sovc when user pressing the touch screen */
-static void sovc_auto_off_check(struct work_struct *sovc_auto_off_check_work)
-{
-	if (!is_new_touch_x && !is_new_touch_y)
-		return;
-
-	sovc_off();
-}
-static DECLARE_DELAYED_WORK(sovc_auto_off_check_work, sovc_auto_off_check);
-
-/* Schedule delayed work of sovc_auto_off_check_work */
-static void sovc_auto_off_schedule(void)
-{
-	if (sovc_auto_off_scheduled)
-		return;
-
-	sovc_auto_off_scheduled = true;
-	schedule_delayed_work(&sovc_auto_off_check_work,
-				msecs_to_jiffies(sovc_auto_off_delay));
-}
 
 /* Key work func */
 static void scroff_volctr_key(struct work_struct *scroff_volctr_key_work)
@@ -200,6 +184,8 @@ static void scroff_volctr_key(struct work_struct *scroff_volctr_key_work)
 		msleep(SOVC_KEY_PRESS_DUR);
 		input_event(sovc_input, EV_KEY, KEY_NEXTSONG, 0);
 		input_event(sovc_input, EV_SYN, 0, 0);
+
+		sovc_notifier_call_chain(SOVC_EVENT_TRACK_CHANGED, NULL);
 		break;
 	case TRACK_PREVIOUS:
 #ifdef SOVC_DEBUG
@@ -211,27 +197,22 @@ static void scroff_volctr_key(struct work_struct *scroff_volctr_key_work)
 		msleep(SOVC_KEY_PRESS_DUR);
 		input_event(sovc_input, EV_KEY, KEY_PREVIOUSSONG, 0);
 		input_event(sovc_input, EV_SYN, 0, 0);
+
+		sovc_notifier_call_chain(SOVC_EVENT_TRACK_CHANGED, NULL);
 		break;
 	}
 
-	// Vibrate when action performed
-#ifdef CONFIG_QPNP_HAPTIC
-	qpnp_hap_td_enable(SOVC_VIB_STRENGTH);
-#endif
 	mutex_unlock(&keyworklock);
 
-	if (is_executing) {
-		// It should be canceled to prevent to turn off the touchscreen.
-		cancel_delayed_work(&sovc_auto_off_check_work);
+	if (is_executing)
 		scroff_volctr_key_delayed_trigger();
-	}
 }
 static DECLARE_DELAYED_WORK(scroff_volctr_key_work, scroff_volctr_key);
 
 /* Key trigger */
 static void scroff_volctr_key_trigger(void)
 {
-	schedule_delayed_work(&scroff_volctr_key_work, 0);
+	queue_delayed_work(system_power_efficient_wq, &scroff_volctr_key_work, 0);
 }
 
 /* Key delayed trigger */
@@ -242,16 +223,25 @@ static void scroff_volctr_key_delayed_trigger(void)
 	switch (control) {
 	case VOL_UP:
 	case VOL_DOWN:
-		delay = SOVC_VOL_REEXEC_DELAY;
+		if (is_executing) {
+			if (sovc_hifi_mode)
+				delay = SOVC_VOL_REEXEC_DELAY_HIFI;
+			else
+				delay = SOVC_VOL_REEXEC_DELAY;
+		} else {
+			delay = SOVC_VOL_REEXEC_FIRST_DELAY;
+		}
 		break;
 	case TRACK_NEXT:
+		delay = SOVC_TRACK_NEXT_REEXEC_DELAY;
+		break;
 	case TRACK_PREVIOUS:
-		delay = SOVC_TRACK_REEXEC_DELAY;
+		delay = SOVC_TRACK_PREVIOUS_REEXEC_DELAY;
 		break;
 	}
 
-	schedule_delayed_work(&scroff_volctr_key_work,
-				msecs_to_jiffies(delay));
+	queue_delayed_work(system_power_efficient_wq, &scroff_volctr_key_work,
+			   msecs_to_jiffies(delay));
 }
 
 /* reset on finger release */
@@ -260,7 +250,6 @@ static void scroff_volctr_reset(void)
 	is_executing = false;
 	is_new_touch_x = false;
 	is_new_touch_y = false;
-	sovc_auto_off_scheduled = false;
 	control = NO_CONTROL;
 }
 
@@ -270,11 +259,16 @@ static void new_touch_x(int x)
 	touch_time_pre_x = ktime_to_ms(ktime_get());
 	is_new_touch_x = true;
 	prev_x = x;
+}
 
-	mutex_lock(&auto_off_schedule_lock);
-	sovc_auto_off_schedule();
-	mutex_unlock(&auto_off_schedule_lock);
+unsigned int calc_feather(int coord, int prev_coord)
+{
+	int calc_coord = 0;
 
+	calc_coord = coord - prev_coord;
+	if (calc_coord < 0)
+		calc_coord *= -1;
+	return calc_coord;
 }
 
 static void new_touch_y(int y)
@@ -282,10 +276,6 @@ static void new_touch_y(int y)
 	touch_time_pre_y = ktime_to_ms(ktime_get());
 	is_new_touch_y = true;
 	prev_y = y;
-
-	mutex_lock(&auto_off_schedule_lock);
-	sovc_auto_off_schedule();
-	mutex_unlock(&auto_off_schedule_lock);
 }
 
 /* exec key control */
@@ -294,24 +284,6 @@ static void exec_key(int key)
 	is_executing = true;
 	control = key;
 	scroff_volctr_key_trigger();
-}
-
-/* Turn off sovc */
-static void sovc_off(void)
-{
-	if (sovc_force_off)
-		return;
-
-	sovc_force_off = true;
-	unregister_sovc();
-	tfa98xx_notifier_call_chain(TFA98XX_EVENT_STOPPED, NULL);
-
-	// Vibrate when action performed
-#ifdef CONFIG_QPNP_HAPTIC
-	qpnp_hap_td_enable(SOVC_VIB_STRENGTH * 3);
-	msleep(50);
-	qpnp_hap_td_enable(SOVC_VIB_STRENGTH * 3);
-#endif
 }
 
 /* scroff_volctr volume function */
@@ -324,7 +296,8 @@ static void sovc_volume_input_callback(struct work_struct *unused)
 
 	time = ktime_to_ms(ktime_get()) - touch_time_pre_y;
 
-	if (time > 0 && time < SOVC_TIME_GAP) {
+	if (time > 0 && time < SOVC_TIME_GAP &&
+	    calc_feather(touch_x, prev_x) < SOVC_VOL_DETERMINE_WIDTH) {
 		if (prev_y - touch_y > SOVC_VOL_FEATHER) // Volume Up (down->up)
 			exec_key(VOL_UP);
 		else if (touch_y - prev_y > SOVC_VOL_FEATHER) // Volume Down (up->down)
@@ -342,7 +315,8 @@ static void sovc_track_input_callback(struct work_struct *unused)
 
 	time = ktime_to_ms(ktime_get()) - touch_time_pre_x;
 
-	if (time > 0 && time < SOVC_TIME_GAP) {
+	if (time > 0 && time < SOVC_TIME_GAP &&
+	    calc_feather(touch_y, prev_y) < SOVC_TRACK_DETERMINE_WIDTH) {
 		if (prev_x - touch_x > SOVC_TRACK_FEATHER) // Track Next (right->left)
 			exec_key(TRACK_NEXT);
 		else if (touch_x - prev_x > SOVC_TRACK_FEATHER) // Track Previous (left->right)
@@ -353,10 +327,7 @@ static void sovc_track_input_callback(struct work_struct *unused)
 static int sovc_input_common_event(struct input_handle *handle, unsigned int type,
 				unsigned int code, int value)
 {
-	if (!sovc_switch)
-		return 1;
-
-	if (!sovc_scr_suspended || !sovc_tmp_onoff)
+	if (!sovc_switch || !sovc_scr_suspended || !sovc_tmp_onoff)
 		return 1;
 
 	/* You can debug here with 'adb shell getevent -l' command. */
@@ -366,15 +337,15 @@ static int sovc_input_common_event(struct input_handle *handle, unsigned int typ
 			return 1;
 
 		case ABS_MT_TRACKING_ID:
-			if (value == 0xffffffff) {
-				cancel_delayed_work(&sovc_auto_off_check_work);
+			if (value == 0xffffffff)
 				scroff_volctr_reset();
-			}
 			return 1;
-
 		default:
 			break;
 	}
+
+	if (is_executing || sovc_ignore)
+		return 1;
 
 	return 0;
 }
@@ -386,9 +357,6 @@ static void sovc_volume_input_event(struct input_handle *handle, unsigned int ty
 
 	out = sovc_input_common_event(handle, type, code, value);
 	if (out)
-		return;
-
-	if (is_executing)
 		return;
 
 	/* You can debug here with 'adb shell getevent -l' command. */
@@ -410,9 +378,6 @@ static void sovc_track_input_event(struct input_handle *handle, unsigned int typ
 
 	out = sovc_input_common_event(handle, type, code, value);
 	if (out)
-		return;
-
-	if (is_executing)
 		return;
 
 	/* You can debug here with 'adb shell getevent -l' command. */
@@ -522,6 +487,8 @@ static int register_sovc(void)
 		goto out;
 	}
 
+	scroff_volctr_reset();
+
 	sovc_volume_input_wq = create_workqueue("sovc_volume_iwq");
 	if (!sovc_volume_input_wq) {
 		pr_err("%s: Failed to create sovc_volume_iwq workqueue\n", __func__);
@@ -555,7 +522,6 @@ out:
 	pr_info(LOGTAG"%s done\n", __func__);
 #endif
 
-	scroff_volctr_reset();
 	return rc;
 err:
 	flush_workqueue(sovc_volume_input_wq);
@@ -566,11 +532,10 @@ err:
 	cancel_work_sync(&sovc_track_input_work);
 	mutex_unlock(&reg_lock);
 
-	scroff_volctr_reset();
 	return rc;
 }
 
-static void unregister_sovc(void)
+void unregister_sovc(void)
 {
 	mutex_lock(&reg_lock);
 
@@ -580,6 +545,8 @@ static void unregister_sovc(void)
 #endif
 		goto out;
 	}
+
+	scroff_volctr_reset();
 
 	input_unregister_handler(&sovc_volume_input_handler);
 	input_unregister_handler(&sovc_track_input_handler);
@@ -623,10 +590,12 @@ static ssize_t sovc_scroff_volctr_dump(struct device *dev,
 	if (val == 0 || val == 1) {
 		if (sovc_switch != val)
 			sovc_switch = val;
+		else
+			return count;
 	} else
 		return -EINVAL;
 
-	if (sovc_switch && sovc_tmp_onoff && sovc_scr_suspended && !tavil_mic_detected)
+	if (sovc_switch && sovc_tmp_onoff && sovc_scr_suspended)
 		register_sovc();
 	else
 		unregister_sovc();
@@ -652,77 +621,33 @@ static ssize_t sovc_scroff_volctr_temp_dump(struct device *dev,
 {
 	int rc, val;
 
-	mutex_lock(&a2dp_lock);
-
 	rc = kstrtoint(buf, 10, &val);
 	if (rc)
-		goto invalid_value;
+		return -EINVAL;
 
 	if (val == 0 || val == 1) {
-		if (val == sovc_tmp_onoff)
-			goto out;
-		if (val == 0 && track_changed)
-			goto out;
-		sovc_tmp_onoff = val;
-	} else
-		goto invalid_value;
-
-	if (sovc_tmp_onoff)
-		track_changed = false;
-
-	if (sovc_switch && sovc_scr_suspended) {
-		if (sovc_tmp_onoff) {
-			if (tavil_mic_detected)
-				unregister_sovc();
-			else
-				register_sovc();
+		if (val) {
+			sovc_tmp_userspace_playing = true;
+			if (sovc_switch && !sovc_tmp_onoff) {
+				mutex_lock(&sovc_playing_state_lock);
+				sovc_notifier_call_chain(SOVC_EVENT_PLAYING, NULL);
+				mutex_unlock(&sovc_playing_state_lock);
+			}
 		} else {
-			unregister_sovc();
-			tfa98xx_notifier_call_chain(TFA98XX_EVENT_STOPPED, NULL);
+			sovc_tmp_userspace_playing = false;
+			if (sovc_switch && sovc_tmp_onoff && !es9218p_playing && !tfa9872_playing) {
+				mutex_lock(&sovc_playing_state_lock);
+				sovc_notifier_call_chain(SOVC_EVENT_STOPPED, NULL);
+				mutex_unlock(&sovc_playing_state_lock);
+			}
 		}
-	} else
-		unregister_sovc();
+	}
 
-out:
-	mutex_unlock(&a2dp_lock);
 	return count;
-invalid_value:
-	mutex_unlock(&a2dp_lock);
-	return -EINVAL;
 }
 
 static DEVICE_ATTR(scroff_volctr_temp, (S_IWUSR|S_IRUGO),
 	sovc_scroff_volctr_temp_show, sovc_scroff_volctr_temp_dump);
-
-static ssize_t sovc_auto_off_delay_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
-{
-	size_t count = 0;
-
-	count += sprintf(buf, "%d\n", sovc_auto_off_delay);
-
-	return count;
-}
-
-static ssize_t sovc_auto_off_delay_dump(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t count)
-{
-	int rc, val;
-
-	rc = kstrtoint(buf, 10, &val);
-	if (rc)
-		return -EINVAL;
-
-	if (val >= 1000 && val <= 60000)
-		sovc_auto_off_delay = val;
-	else
-		return -EINVAL;
-
-	return count;
-}
-
-static DEVICE_ATTR(sovc_auto_off_delay, (S_IWUSR|S_IRUGO),
-	sovc_auto_off_delay_show, sovc_auto_off_delay_dump);
 
 static ssize_t sovc_version_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
@@ -755,29 +680,16 @@ static int sovc_fb_notifier_callback(struct notifier_block *self,
 	if (event == FB_EVENT_BLANK) {
 		blank = evdata->data;
 
-#ifdef SOVC_DEBUG
-		pr_info(LOGTAG"FB Mode: %d\n", *blank);
-#endif
-
-		switch (*blank) {
-		case FB_BLANK_UNBLANK:
+		if (*blank == FB_BLANK_UNBLANK) {
 			sovc_scr_suspended = false;
-			sovc_force_off = false;
-			cancel_delayed_work(&sovc_auto_off_check_work);
+			track_changed = false;
 			unregister_sovc();
-			break;
-		case FB_BLANK_NORMAL:
-		case FB_BLANK_VSYNC_SUSPEND:
-		case FB_BLANK_POWERDOWN:
+		} else {
+			if (sovc_scr_suspended)
+				return 0;
 			sovc_scr_suspended = true;
-			if (sovc_switch && (track_changed || sovc_tmp_onoff)) {
-				if (tavil_mic_detected) {
-					unregister_sovc();
-					break;
-				}
+			if (sovc_state_playing())
 				register_sovc();
-			}
-			break;
 		}
 	}
 
@@ -788,27 +700,25 @@ struct notifier_block sovc_fb_notif = {
 	.notifier_call = sovc_fb_notifier_callback,
 };
 
-static int sovc_tfa98xx_notifier_callback(struct notifier_block *self,
+static int sovc_notifier_callback(struct notifier_block *self,
 				unsigned long event, void *data)
 {
 	if (!sovc_switch)
 		return 0;
 
 	switch (event) {
-	case TFA98XX_EVENT_PLAYING:
+	case SOVC_EVENT_PLAYING:
 #ifdef SOVC_DEBUG
-		pr_info(LOGTAG"TFA98XX_EVENT: Playing\n");
+		pr_info(LOGTAG"SOVC_EVENT: Playing\n");
 #endif
-
 		track_changed = false;
 		sovc_tmp_onoff = 1;
 		break;
-	case TFA98XX_EVENT_STOPPED:
+	case SOVC_EVENT_STOPPED:
 #ifdef SOVC_DEBUG
-		pr_info(LOGTAG"TFA98XX_EVENT: Stopped\n");
+		pr_info(LOGTAG"SOVC_EVENT: Stopped\n");
 #endif
-
-		if (!track_changed && !sovc_force_off)
+		if (!track_changed)
 			sovc_tmp_onoff = 0;
 		break;
 	}
@@ -816,8 +726,8 @@ static int sovc_tfa98xx_notifier_callback(struct notifier_block *self,
 	return 0;
 }
 
-struct notifier_block sovc_tfa98xx_notif = {
-	.notifier_call = sovc_tfa98xx_notifier_callback,
+struct notifier_block sovc_notif = {
+	.notifier_call = sovc_notifier_callback,
 };
 
 /*
@@ -857,9 +767,9 @@ static int __init scroff_volctr_init(void)
 	if (rc) {
 		pr_warn("%s: fb register failed\n", __func__);
 	}
-	rc = tfa98xx_register_client(&sovc_tfa98xx_notif);
+	rc = sovc_register_client(&sovc_notif);
 	if (rc) {
-		pr_warn("%s: tfa98xx register failed\n", __func__);
+		pr_warn("%s: sovc notifier register failed\n", __func__);
 	}
 
 	rc = sysfs_create_file(android_touch_kobj, &dev_attr_scroff_volctr.attr);
@@ -870,14 +780,12 @@ static int __init scroff_volctr_init(void)
 	if (rc) {
 		pr_warn("%s: sysfs_create_file failed for scroff_volctr_temp\n", __func__);
 	}
-	rc = sysfs_create_file(android_touch_kobj, &dev_attr_sovc_auto_off_delay.attr);
-	if (rc) {
-		pr_warn("%s: sysfs_create_file failed for sovc_auto_off_delay\n", __func__);
-	}
 	rc = sysfs_create_file(android_touch_kobj, &dev_attr_scroff_volctr_version.attr);
 	if (rc) {
 		pr_warn("%s: sysfs_create_file failed for scroff_volctr_version\n", __func__);
 	}
+
+	mutex_init(&sovc_playing_state_lock);
 
 err_input_dev:
 	input_free_device(sovc_input);
@@ -894,7 +802,7 @@ static void __exit scroff_volctr_exit(void)
 	input_unregister_device(sovc_input);
 	input_free_device(sovc_input);
 	fb_unregister_client(&sovc_fb_notif);
-	tfa98xx_unregister_client(&sovc_tfa98xx_notif);
+	sovc_unregister_client(&sovc_notif);
 }
 
 module_init(scroff_volctr_init);
