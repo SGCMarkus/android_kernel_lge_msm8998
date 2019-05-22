@@ -677,14 +677,25 @@ int amdgpu_atombios_get_clock_info(struct amdgpu_device *adev)
 		adev->clock.default_dispclk =
 			le32_to_cpu(firmware_info->info_21.ulDefaultDispEngineClkFreq);
 		/* set a reasonable default for DP */
-		if (adev->clock.default_dispclk < 53900) {
+
+/*		if (adev->clock.default_dispclk < 53900) {
 			DRM_INFO("Changing default dispclk from %dMhz to 600Mhz\n",
 				 adev->clock.default_dispclk / 100);
 			adev->clock.default_dispclk = 60000;
 		} else if (adev->clock.default_dispclk <= 60000) {
 			DRM_INFO("Changing default dispclk from %dMhz to 625Mhz\n",
 				 adev->clock.default_dispclk / 100);
-			adev->clock.default_dispclk = 62500;
+			adev->clock.default_dispclk = 62500; */
+
+		if (adev->clock.default_dispclk < 103900) {
+			DRM_INFO("Changing default dispclk from %dMhz to 2000Mhz\n",
+				 adev->clock.default_dispclk / 1500);
+			adev->clock.default_dispclk = 200000;
+		} else if (adev->clock.default_dispclk <= 200000) {
+			DRM_INFO("Changing default dispclk from %dMhz to 2025Mhz\n",
+				 adev->clock.default_dispclk / 1000);
+			adev->clock.default_dispclk = 202500;
+
 		}
 		adev->clock.dp_extclk =
 			le16_to_cpu(firmware_info->info_21.usUniphyDPModeExtClkFreq);
@@ -692,7 +703,7 @@ int amdgpu_atombios_get_clock_info(struct amdgpu_device *adev)
 
 		adev->clock.max_pixel_clock = le16_to_cpu(firmware_info->info.usMaxPixelClock);
 		if (adev->clock.max_pixel_clock == 0)
-			adev->clock.max_pixel_clock = 40000;
+			adev->clock.max_pixel_clock = 80000;
 
 		/* not technically a clock, but... */
 		adev->mode_info.firmware_flags =
