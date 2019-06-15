@@ -10,13 +10,10 @@ struct netns_frags {
 	struct percpu_counter   mem ____cacheline_aligned_in_smp;
 
 	/* Keep atomic mem on separate cachelines in structs that include it */
-	atomic_long_t		mem ____cacheline_aligned_in_smp;
+	atomic_t		mem ____cacheline_aligned_in_smp;
 
 	/* sysctls */
-	long			high_thresh;
-	long			low_thresh;
 	int			timeout;
-
 	int			high_thresh;
 	int			low_thresh;
 
@@ -119,7 +116,7 @@ void inet_frags_fini(struct inet_frags *);
 
 static inline int inet_frags_init_net(struct netns_frags *nf)
 {
-	atomic_long_set(&nf->mem, 0);
+	atomic_set(&nf->mem, 0);
 	return rhashtable_init(&nf->rhashtable, &nf->f->rhash_params);
 
 }
@@ -147,21 +144,21 @@ static inline bool inet_frag_evicting(struct inet_frag_queue *q)
 
 /* Memory Tracking Functions. */
 
-static inline long frag_mem_limit(const struct netns_frags *nf)
+static inline int frag_mem_limit(struct netns_frags *nf)
 {
-	return atomic_long_read(&nf->mem);
+	return atomic_read(&nf->mem);
 
 }
 
-static inline void sub_frag_mem_limit(struct netns_frags *nf, long val)
+static inline void sub_frag_mem_limit(struct netns_frags *nf, int i)
 {
-	atomic_long_sub(val, &nf->mem);
+	atomic_sub(i, &nf->mem);
 
 }
 
-static inline void add_frag_mem_limit(struct netns_frags *nf, long val)
+static inline void add_frag_mem_limit(struct netns_frags *nf, int i)
 {
-	atomic_long_add(val, &nf->mem);
+	atomic_add(i, &nf->mem);
 
 }
 
