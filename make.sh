@@ -1,5 +1,6 @@
 #!/bin/sh
 
+datetime=$(date +%Y%m%d | awk '{ print $1 }');
 export USE_CCACHE=1
 
 export CACHE_DIR=~/.ccache
@@ -29,4 +30,17 @@ make lineageos_h930_defconfig
 
 time make -j8
 
-mkbootimg --kernel /home/abuzar/Kernel/markus/arch/arm64/boot/Image.gz-dtb --ramdisk /home/abuzar/Kernel/boot.img-ramdisk.cpio.gz --second /dev/null --cmdline "androidboot.hardware=joan user_debug=31 msm_rtb.filter=0x37 ehci-hcd.park=3 lpm_levels.sleep_disabled=1 sched_enable_hmp=1 sched_enable_power_aware=1 service_locator.enable=1 swiotlb=2048 rcupdate.rcu_expedited=1 androidboot.configfs=true androidboot.usbcontroller=a800000.dwc3 androidboot.selinux=permissive buildvariant=userdebug" --base 0x00000000 --board "" --pagesize 4096 -o /home/abuzar/Kernel/markus/boot.img
+# mkbootimg --kernel /home/abuzar/Kernel/markus/arch/arm64/boot/Image.gz-dtb --ramdisk /home/abuzar/Kernel/boot.img-ramdisk.cpio.gz --second /dev/null --cmdline "androidboot.hardware=joan user_debug=31 msm_rtb.filter=0x37 ehci-hcd.park=3 lpm_levels.sleep_disabled=1 sched_enable_hmp=1 sched_enable_power_aware=1 service_locator.enable=1 swiotlb=2048 rcupdate.rcu_expedited=1 androidboot.configfs=true androidboot.usbcontroller=a800000.dwc3 androidboot.selinux=permissive buildvariant=userdebug" --base 0x00000000 --board "" --pagesize 4096 -o /home/abuzar/Kernel/markus/boot.img
+echo "Copying dtb image"
+cp -f /home/abuzar/Kernel/markus/arch/arm64/boot/Image.gz-dtb /home/abuzar/Kernel/flashable/
+echo "Compressing flashable zip"
+cd /home/abuzar/Kernel/flashable/
+zip -r ../Stock_Enhanced *
+echo "Signing flashable zip"
+signapk -w ../GCC/key/testkey.x509.pem ../GCC/key/testkey.pk8 ../Stock_Enhanced.zip ../Stock_Enhanced-"$datetime".zip
+rm ../Stock_Enhanced.zip
+
+
+
+
+
