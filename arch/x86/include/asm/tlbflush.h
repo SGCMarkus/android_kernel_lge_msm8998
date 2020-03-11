@@ -19,7 +19,8 @@ struct tlb_state {
 #ifdef CONFIG_SMP
 	struct mm_struct *active_mm;
 	int state;
-#endif
+	/* last user mm's ctx id */
+	u64 last_ctx_id;
 
 	/*
 	 * Access to this CR4 shadow and to H/W CR4 is protected by

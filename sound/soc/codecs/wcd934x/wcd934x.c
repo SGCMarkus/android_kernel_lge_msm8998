@@ -52,6 +52,11 @@
 #include <linux/switch.h>
 #endif
 
+#ifdef CONFIG_TOUCHSCREEN_SCROFF_VOLCTR
+bool tavil_mic_detected = false;
+EXPORT_SYMBOL(tavil_mic_detected);
+#endif
+
 #define WCD934X_RATES_MASK (SNDRV_PCM_RATE_8000 | SNDRV_PCM_RATE_16000 |\
 			    SNDRV_PCM_RATE_32000 | SNDRV_PCM_RATE_48000 |\
 			    SNDRV_PCM_RATE_96000 | SNDRV_PCM_RATE_192000 |\
@@ -1962,6 +1967,9 @@ static int tavil_codec_enable_ear_pa(struct snd_soc_dapm_widget *w,
 		pr_info("%s : enable SAR backoff\n", __func__);
 		switch_set_state(&tavil->sar, 1);
 #endif
+#ifdef CONFIG_TOUCHSCREEN_SCROFF_VOLCTR
+		tavil_mic_detected = true;
+#endif
 		usleep_range(5000, 5500);
 		snd_soc_update_bits(codec, WCD934X_CDC_RX0_RX_PATH_CTL,
 				    0x10, 0x00);
@@ -1980,6 +1988,9 @@ static int tavil_codec_enable_ear_pa(struct snd_soc_dapm_widget *w,
 #ifdef CONFIG_MACH_LGE
 		pr_info("%s : disable SAR backoff\n", __func__);
 		switch_set_state(&tavil->sar, 0);
+#endif
+#ifdef CONFIG_TOUCHSCREEN_SCROFF_VOLCTR
+		tavil_mic_detected = false;
 #endif
 		usleep_range(5000, 5500);
 

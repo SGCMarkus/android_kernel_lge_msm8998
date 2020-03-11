@@ -21,6 +21,7 @@
 #include <linux/clk.h>
 #include <linux/pm_qos.h>
 #include <linux/regulator/consumer.h>
+#include <linux/notifier.h>
 
 #include "msm_drv.h"
 #include "msm_ringbuffer.h"
@@ -147,6 +148,15 @@ struct msm_gpu {
 	struct timer_list hangcheck_timer;
 	struct work_struct recover_work;
 	struct msm_snapshot *snapshot;
+
+	struct {
+		struct devfreq *devfreq;
+		u64 busy_cycles;
+		ktime_t time;
+		struct thermal_cooling_device *cooling_dev;
+	} devfreq;
+
+	struct notifier_block nb;
 };
 
 struct msm_gpu_submitqueue {

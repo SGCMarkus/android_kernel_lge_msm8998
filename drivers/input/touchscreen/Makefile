@@ -102,3 +102,4 @@ obj-$(CONFIG_LGE_TOUCH_CORE)            += lge/
 obj-$(CONFIG_LGE_TOUCH_CORE_MTK)        += lge/
 obj-$(CONFIG_TOUCHSCREEN_FTM4)        += stm/
 obj-$(CONFIG_TOUCHSCREEN_ST)		+= st/
+obj-$(CONFIG_TOUCHSCREEN_SCROFF_VOLCTR)	+= scroff_volctr.o

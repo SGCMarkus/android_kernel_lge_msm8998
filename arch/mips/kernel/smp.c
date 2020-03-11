@@ -174,8 +174,6 @@ asmlinkage void start_secondary(void)
 	cpumask_set_cpu(cpu, &cpu_coherent_mask);
 	notify_cpu_starting(cpu);
 
-	cpumask_set_cpu(cpu, &cpu_callin_map);
-	synchronise_count_slave(cpu);
 
 	set_cpu_online(cpu, true);
 
@@ -183,6 +181,9 @@ asmlinkage void start_secondary(void)
 	set_cpu_core_map(cpu);
 
 	calculate_cpu_foreign_map();
+
+	complete(&cpu_running);
+	synchronise_count_slave(cpu);
 
 	/*
 	 * irq will be enabled in ->smp_finish(), enabling it too early

@@ -2227,7 +2227,7 @@ static int qpnp_hap_auto_mode_config(struct qpnp_hap *hap, int time_ms)
 }
 
 /* enable interface from timed output class */
-static void qpnp_hap_td_enable(struct timed_output_dev *dev, int time_ms)
+static void _qpnp_hap_td_enable(struct timed_output_dev *dev, int time_ms)
 {
 	struct qpnp_hap *hap = container_of(dev, struct qpnp_hap,
 					 timed_dev);
@@ -2273,6 +2273,12 @@ static void qpnp_hap_td_enable(struct timed_output_dev *dev, int time_ms)
 	mutex_unlock(&hap->lock);
 	schedule_work(&hap->work);
 }
+
+void qpnp_hap_td_enable(int time_ms)
+{
+	_qpnp_hap_td_enable(&ghap->timed_dev, time_ms);
+}
+EXPORT_SYMBOL(qpnp_hap_td_enable);
 
 /* play pwm bytes */
 int qpnp_hap_play_byte(u8 data, bool on)
@@ -2971,11 +2977,11 @@ static int qpnp_haptic_probe(struct platform_device *pdev)
 	hap = devm_kzalloc(&pdev->dev, sizeof(*hap), GFP_KERNEL);
 	if (!hap)
 		return -ENOMEM;
-		hap->regmap = dev_get_regmap(pdev->dev.parent, NULL);
-		if (!hap->regmap) {
-			pr_err("Couldn't get parent's regmap\n");
-			return -EINVAL;
-		}
+	hap->regmap = dev_get_regmap(pdev->dev.parent, NULL);
+	if (!hap->regmap) {
+		pr_err("Couldn't get parent's regmap\n");
+		return -EINVAL;
+	}
 
 	hap->pdev = pdev;
 
@@ -3022,7 +3028,7 @@ static int qpnp_haptic_probe(struct platform_device *pdev)
 
 	hap->timed_dev.name = "vibrator";
 	hap->timed_dev.get_time = qpnp_hap_get_time;
-	hap->timed_dev.enable = qpnp_hap_td_enable;
+	hap->timed_dev.enable = _qpnp_hap_td_enable;
 
 	hrtimer_init(&hap->auto_res_err_poll_timer, CLOCK_MONOTONIC,
 			HRTIMER_MODE_REL);

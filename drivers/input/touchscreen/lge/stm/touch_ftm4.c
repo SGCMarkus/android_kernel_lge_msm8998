@@ -21,6 +21,10 @@
 #include <linux/interrupt.h>
 #include <linux/irq.h>
 #include <linux/firmware.h>
+#ifdef CONFIG_TOUCHSCREEN_SCROFF_VOLCTR
+#include <linux/hrtimer.h>
+#include <asm-generic/cputime.h>
+#endif
 
 /*
  *  Include to touch core Header File
@@ -33,6 +37,36 @@
  */
 #include "touch_ftm4.h"
 #include "touch_ftm4_prd.h"
+
+#ifdef CONFIG_TOUCHSCREEN_SCROFF_VOLCTR
+#include <linux/input/scroff_volctr.h>
+#include <linux/input/sovc_notifier.h>
+
+enum {
+	TOUCH_SUSPEND_STATE_LOW_POWER = 1,
+	TOUCH_SUSPEND_STATE_DEEP_SLEEP,
+};
+
+static struct mutex suspend_resume_lock;
+
+#define DT2W_FEATHER		200
+#define DT2W_TIME_GAP		200
+
+extern int lpwg_status;
+
+static s64 tap_time_pre = 0;
+static int touch_nr = 0, x_pre = 0, y_pre = 0;
+static bool is_touching = false;
+static struct input_dev * doubletap2wake_pwrdev;
+static DEFINE_MUTEX(pwrkeyworklock);
+
+static bool swipe_tool_enabled = false;
+static int lpwg_abs_offset_y = 0;
+static int lpwg_abs_start_y = 0;
+static int lpwg_abs_end_y = 0;
+
+static bool touch_suspended = false;
+#endif
 
 /*
  *  Include to Local Function
@@ -1033,7 +1067,7 @@ static void ftm4_get_swipe_info(struct device *dev)
 	d->swipe.info[SWIPE_U].area.x2 = 1359;
 	d->swipe.info[SWIPE_U].area.y2 = 2879;
 	d->swipe.info[SWIPE_U].start_area.x1 = 439;
-	d->swipe.info[SWIPE_U].start_area.y1 = 2100;
+	d->swipe.info[SWIPE_U].start_area.y1 = 2557;
 	d->swipe.info[SWIPE_U].start_area.x2 = 1000;
 	d->swipe.info[SWIPE_U].start_area.y2 = 2879;
 	d->swipe.info[SWIPE_U].border_area.x1 = 0;
@@ -1058,7 +1092,7 @@ static void ftm4_get_swipe_info(struct device *dev)
 	d->swipe.info[SWIPE_D].start_area.x1 = 80;
 	d->swipe.info[SWIPE_D].start_area.y1 = 0;
 	d->swipe.info[SWIPE_D].start_area.x2 = 1359;
-	d->swipe.info[SWIPE_D].start_area.y2 = 700;
+	d->swipe.info[SWIPE_D].start_area.y2 = 300;
 	d->swipe.info[SWIPE_D].border_area.x1 = 30;
 	d->swipe.info[SWIPE_D].border_area.y1 = 30;
 	d->swipe.info[SWIPE_D].border_area.x2 = 30;
@@ -1075,13 +1109,13 @@ static void ftm4_get_swipe_info(struct device *dev)
 	d->swipe.info[SWIPE_R].initial_ratio_dist = 2;
 	d->swipe.info[SWIPE_R].initial_ratio_thres = 100;
 	d->swipe.info[SWIPE_R].area.x1 = 0;
-	d->swipe.info[SWIPE_R].area.y1 = 940;
+	d->swipe.info[SWIPE_R].area.y1 = 0;
 	d->swipe.info[SWIPE_R].area.x2 = 1439;
-	d->swipe.info[SWIPE_R].area.y2 = 1940;
+	d->swipe.info[SWIPE_R].area.y2 = 300;
 	d->swipe.info[SWIPE_R].start_area.x1 = 0;
-	d->swipe.info[SWIPE_R].start_area.y1 = 940;
+	d->swipe.info[SWIPE_R].start_area.y1 = 0;
 	d->swipe.info[SWIPE_R].start_area.x2 = 1439;
-	d->swipe.info[SWIPE_R].start_area.y2 = 1940;
+	d->swipe.info[SWIPE_R].start_area.y2 = 300;
 	d->swipe.info[SWIPE_R].border_area.x1 = 100;
 	d->swipe.info[SWIPE_R].border_area.y1 = 100;
 	d->swipe.info[SWIPE_R].border_area.x2 = 100;
@@ -1098,13 +1132,13 @@ static void ftm4_get_swipe_info(struct device *dev)
 	d->swipe.info[SWIPE_L].initial_ratio_dist = 2;
 	d->swipe.info[SWIPE_L].initial_ratio_thres = 100;
 	d->swipe.info[SWIPE_L].area.x1 = 0;
-	d->swipe.info[SWIPE_L].area.y1 = 940;
+	d->swipe.info[SWIPE_L].area.y1 = 0;
 	d->swipe.info[SWIPE_L].area.x2 = 1439;
-	d->swipe.info[SWIPE_L].area.y2 = 1940;
+	d->swipe.info[SWIPE_L].area.y2 = 300;
 	d->swipe.info[SWIPE_L].start_area.x1 = 0;
-	d->swipe.info[SWIPE_L].start_area.y1 = 940;
+	d->swipe.info[SWIPE_L].start_area.y1 = 0;
 	d->swipe.info[SWIPE_L].start_area.x2 = 1439;
-	d->swipe.info[SWIPE_L].start_area.y2 = 1940;
+	d->swipe.info[SWIPE_L].start_area.y2 = 300;
 	d->swipe.info[SWIPE_L].border_area.x1 = 100;
 	d->swipe.info[SWIPE_L].border_area.y1 = 100;
 	d->swipe.info[SWIPE_L].border_area.x2 = 100;
@@ -1408,7 +1442,7 @@ static int ftm4_swipe_enable(struct device *dev, bool enable)
 	struct swipe_info *down = &d->swipe.info[SWIPE_D];
 	struct swipe_info *right = &d->swipe.info[SWIPE_R];
 	struct swipe_info *left = &d->swipe.info[SWIPE_L];
-	u8 swipe_enable = 1;
+	u8 swipe_enable = 0;
 	int ret = 0;
 
 	TOUCH_TRACE();
@@ -2014,6 +2048,89 @@ static void ftm4_lpwg_force_cal_debug(struct device *dev)
 				& DEBUG_OPTION_2 ? "disable" : "enable");
 }
 
+#ifdef CONFIG_TOUCHSCREEN_SCROFF_VOLCTR
+static int prev_lpwg_mode = LPWG_NONE;
+static bool prev_swipe = false;
+static bool prev_gesture = false;
+static int prev_state = TOUCH_SUSPEND_STATE_LOW_POWER;
+
+static void restore_touch_prev_state(struct device *dev, bool suspend)
+{
+	struct ftm4_data *d = to_ftm4_data(dev);
+
+	cancel_delayed_work(&d->touch_off_work);
+
+	ftm4_lpwg_control(dev, prev_lpwg_mode);
+	ftm4_swipe_enable(dev, prev_swipe);
+	ftm4_gesture_set(dev, prev_gesture);
+
+	if (suspend) {
+		if (prev_state == TOUCH_SUSPEND_STATE_LOW_POWER)
+			ftm4_set_low_power_mode(dev);
+		else if (prev_state == TOUCH_SUSPEND_STATE_DEEP_SLEEP)
+			ftm4_set_deep_sleep_mode(dev);
+	}
+}
+#endif
+
+static void resume_touch_screen(struct device *dev, bool restore_prev)
+{
+#ifdef CONFIG_TOUCHSCREEN_SCROFF_VOLCTR
+	struct ftm4_data *d = to_ftm4_data(dev);
+
+	mutex_lock(&suspend_resume_lock);
+	cancel_delayed_work(&d->touch_off_work);
+
+	if (restore_prev) {
+		restore_touch_prev_state(dev, false);
+	} else {
+		ftm4_lpwg_control(dev, LPWG_NONE);
+		ftm4_swipe_enable(dev, false);
+		ftm4_gesture_set(dev, false);
+	}
+#endif
+	ftm4_system_reset(dev);
+	ftm4_wait_for_ready(dev);
+	ftm4_interrupt_set(dev, INT_ENABLE);
+	ftm4_set_active_mode(dev);
+#ifdef CONFIG_TOUCHSCREEN_SCROFF_VOLCTR
+	touch_suspended = false;
+	mutex_unlock(&suspend_resume_lock);
+#endif
+}
+
+static void suspend_touch_screen(struct device *dev, int lpwg_mode,
+				 bool swipe, bool gesture, int state)
+{
+	struct ftm4_data *d = to_ftm4_data(dev);
+
+#ifdef CONFIG_TOUCHSCREEN_SCROFF_VOLCTR
+	mutex_lock(&suspend_resume_lock);
+	cancel_delayed_work(&d->touch_off_work);
+#endif
+	prev_lpwg_mode = lpwg_mode;
+	prev_swipe = swipe;
+	prev_gesture = gesture;
+	prev_state = state;
+
+	ftm4_lpwg_control(dev, lpwg_mode);
+	ftm4_swipe_enable(dev, swipe);
+	ftm4_gesture_set(dev, gesture);
+
+	if (state == TOUCH_SUSPEND_STATE_LOW_POWER) {
+		ftm4_set_low_power_mode(dev);
+		if (lpwg_mode != LPWG_DOUBLE_TAP && d->lpwg_abs.enable) {
+			TOUCH_I("%s: enable lpwg_abs\n", __func__);
+			ftm4_lpwg_abs_enable(d->dev, d->lpwg_abs.enable);
+		}
+	} else if (state == TOUCH_SUSPEND_STATE_DEEP_SLEEP)
+		ftm4_set_deep_sleep_mode(dev);
+#ifdef CONFIG_TOUCHSCREEN_SCROFF_VOLCTR
+	touch_suspended = true;
+	mutex_unlock(&suspend_resume_lock);
+#endif
+}
+
 static int ftm4_lpwg_mode(struct device *dev)
 {
 	struct touch_core_data *ts = to_touch_core(dev);
@@ -2040,10 +2157,12 @@ static int ftm4_lpwg_mode(struct device *dev)
 
 	if (atomic_read(&ts->state.fb) == FB_SUSPEND) {
 		if (ts->role.mfts_lpwg) {
-			ftm4_lpwg_control(dev, LPWG_DOUBLE_TAP);
-			ftm4_swipe_enable(dev, true);
-			ftm4_gesture_set(dev, true);
-			ftm4_set_low_power_mode(dev);
+			suspend_touch_screen(dev, LPWG_DOUBLE_TAP,
+					     true, true, TOUCH_SUSPEND_STATE_LOW_POWER);
+#ifdef CONFIG_TOUCHSCREEN_SCROFF_VOLCTR
+			if (sovc_state_playing())
+				resume_touch_screen(dev, true);
+#endif
 			return 0;
 		}
 		if (ts->lpwg.screen) {
@@ -2053,34 +2172,31 @@ static int ftm4_lpwg_mode(struct device *dev)
 			/* deep sleep */
 			TOUCH_I("%s: suspend ts->lpwg.sensor == PROX_NEAR\n",
 					__func__);
-			ftm4_lpwg_control(dev, LPWG_NONE);
-			ftm4_swipe_enable(dev, false);
-			ftm4_gesture_set(dev, false);
-			ftm4_set_deep_sleep_mode(dev);
+			suspend_touch_screen(dev, LPWG_NONE,
+					     false, false, TOUCH_SUSPEND_STATE_DEEP_SLEEP);
+
 		} else if (ts->lpwg.qcover == HALL_NEAR) {
 			TOUCH_I("%s: suspend ts->lpwg.qcover == HALL_NEAR\n",
 					__func__);
-			ftm4_lpwg_control(dev, LPWG_NONE);
-			ftm4_swipe_enable(dev, false);
-			ftm4_gesture_set(dev, false);
-			ftm4_set_deep_sleep_mode(dev);
+			suspend_touch_screen(dev, LPWG_NONE,
+					     false, false, TOUCH_SUSPEND_STATE_DEEP_SLEEP);
 		} else {
 			if (ts->lpwg.mode == LPWG_NONE && !d->swipe.mode
 					&& !d->voice_button.enable) {
 				/* knock on code disable, swipe disable, voice button disable */
-				ftm4_lpwg_control(dev, LPWG_NONE);
-				ftm4_swipe_enable(dev, false);
-				ftm4_gesture_set(dev, false);
-				ftm4_set_deep_sleep_mode(dev);
+				suspend_touch_screen(dev, LPWG_NONE,
+						     false, false, TOUCH_SUSPEND_STATE_DEEP_SLEEP);
+#ifdef CONFIG_TOUCHSCREEN_SCROFF_VOLCTR
+				if (sovc_state_playing())
+					resume_touch_screen(dev, true);
+#endif
 			} else {
-				ftm4_lpwg_control(dev, ts->lpwg.mode);
-				ftm4_swipe_enable(dev, true);
-				ftm4_gesture_set(dev, true);
-				ftm4_set_low_power_mode(dev);
-				if (d->lpwg_abs.enable) {
-					TOUCH_I("%s: enable lpwg_abs\n", __func__);
-					ftm4_lpwg_abs_enable(d->dev, d->lpwg_abs.enable);
-				}
+				suspend_touch_screen(dev, ts->lpwg.mode,
+						     true, true, TOUCH_SUSPEND_STATE_LOW_POWER);
+#ifdef CONFIG_TOUCHSCREEN_SCROFF_VOLCTR
+				if (sovc_state_playing())
+					resume_touch_screen(dev, true);
+#endif
 			}
 		}
 		return 0;
@@ -2090,13 +2206,7 @@ static int ftm4_lpwg_mode(struct device *dev)
 	if (ts->lpwg.screen) {
 		/* normal */
 		TOUCH_I("%s: resume ts->lpwg.screen on\n", __func__);
-		ftm4_lpwg_control(dev, LPWG_NONE);
-		ftm4_swipe_enable(dev, false);
-		ftm4_gesture_set(dev, false);
-		ftm4_system_reset(dev);
-		ftm4_wait_for_ready(dev);
-		ftm4_interrupt_set(dev, INT_ENABLE);
-		ftm4_set_active_mode(dev);
+		resume_touch_screen(dev, false);
 		if (ts->lpwg.qcover == HALL_NEAR) {
 			TOUCH_I("%s: resume ts->lpwg.qcover == HALL_NEAR\n",
 					__func__);
@@ -2106,25 +2216,23 @@ static int ftm4_lpwg_mode(struct device *dev)
 		}
 	} else if (ts->lpwg.sensor == PROX_NEAR) {
 		TOUCH_I("%s: resume ts->lpwg.sensor == PROX_NEAR\n", __func__);
-		ftm4_lpwg_control(dev, LPWG_NONE);
-		ftm4_swipe_enable(dev, false);
-		ftm4_gesture_set(dev, false);
-		ftm4_set_deep_sleep_mode(dev);
+		suspend_touch_screen(dev, LPWG_NONE,
+		     false, false, TOUCH_SUSPEND_STATE_DEEP_SLEEP);
 	} else {
 		/* partial */
 		TOUCH_I("%s: resume Partial\n", __func__);
 		if (ts->lpwg.qcover == HALL_NEAR) {
 			TOUCH_I("%s: ts->lpwg.qcover == HALL_NEAR\n",
 					__func__);
-			ftm4_lpwg_control(dev, LPWG_NONE);
-			ftm4_swipe_enable(dev, false);
-			ftm4_gesture_set(dev, false);
-			ftm4_set_deep_sleep_mode(dev);
+			suspend_touch_screen(dev, LPWG_NONE,
+			     false, false, TOUCH_SUSPEND_STATE_DEEP_SLEEP);
 		} else {
-			ftm4_lpwg_control(dev, ts->lpwg.mode);
-			ftm4_swipe_enable(dev, true);
-			ftm4_gesture_set(dev, true);
-			ftm4_set_low_power_mode(dev);
+			suspend_touch_screen(dev, ts->lpwg.mode,
+					     true, true, TOUCH_SUSPEND_STATE_LOW_POWER);
+#ifdef CONFIG_TOUCHSCREEN_SCROFF_VOLCTR
+			if (sovc_state_playing())
+				resume_touch_screen(dev, true);
+#endif
 		}
 	}
 
@@ -2385,6 +2493,89 @@ static void ftm4_init_locks(struct ftm4_data *d)
 	mutex_init(&d->io_lock);
 }
 
+#ifdef CONFIG_TOUCHSCREEN_SCROFF_VOLCTR
+static void ftm4_touch_off(struct work_struct *work)
+{
+	struct ftm4_data *d = container_of(work, struct ftm4_data, touch_off_work.work);
+
+	track_changed = false;
+
+	if (!sovc_scr_suspended)
+		return;
+
+	unregister_sovc();
+
+	mutex_lock(&suspend_resume_lock);
+	restore_touch_prev_state(d->dev, true);
+	mutex_unlock(&suspend_resume_lock);
+}
+
+static int sovc_notifier_callback(struct notifier_block *self,
+				unsigned long event, void *data)
+{
+	struct ftm4_data *d =
+		container_of(self, struct ftm4_data, sovc_notif);
+
+	if (!sovc_switch || !sovc_scr_suspended)
+		return 0;
+
+	switch (event) {
+	case SOVC_EVENT_PLAYING:
+	case SOVC_EVENT_TRACK_CHANGED:
+		cancel_delayed_work(&d->touch_off_work);
+		break;
+	case SOVC_EVENT_STOPPED:
+		queue_delayed_work(d->touch_off_workqueue,
+				&d->touch_off_work,
+				msecs_to_jiffies(SOVC_TOUCH_OFF_DELAY));
+		break;
+	}
+
+	return 0;
+}
+
+static void configure_sovc(struct ftm4_data *d)
+{
+	int ret = 0;
+
+	mutex_init(&suspend_resume_lock);
+
+	d->sovc_notif.notifier_call = sovc_notifier_callback;
+	ret = sovc_register_client(&d->sovc_notif);
+	if (ret)
+		TOUCH_I("%s: Unable to register sovc_notifier: %d\n", __func__, ret);
+
+	d->touch_off_workqueue =
+			alloc_workqueue("sovc_touch_off_workqueue",
+			WQ_UNBOUND | WQ_HIGHPRI | __WQ_ORDERED, 1);
+
+	INIT_DELAYED_WORK(&d->touch_off_work,
+			ftm4_touch_off);
+
+	doubletap2wake_pwrdev = input_allocate_device();
+	if (!doubletap2wake_pwrdev)
+		TOUCH_E("Can't allocate suspend autotest power button\n");
+
+	input_set_capability(doubletap2wake_pwrdev, EV_KEY, KEY_POWER);
+	doubletap2wake_pwrdev->name = "dt2w_pwrkey";
+	doubletap2wake_pwrdev->phys = "dt2w_pwrkey/input0";
+
+	ret = input_register_device(doubletap2wake_pwrdev);
+	if (ret) {
+		TOUCH_E("%s: input_register_device err=%d\n", __func__, ret);
+		input_free_device(doubletap2wake_pwrdev);
+	}
+
+	return;
+}
+
+static void remove_sovc(struct ftm4_data *d)
+{
+	sovc_unregister_client(&d->sovc_notif);
+	input_free_device(doubletap2wake_pwrdev);
+}
+#endif
+
 static void ftm4_get_dts(struct device *dev)
 {
 	struct touch_core_data *ts = to_touch_core(dev);
@@ -2446,6 +2637,10 @@ static int ftm4_probe(struct device *dev)
 	ftm4_init_works(d);
 	ftm4_init_locks(d);
 
+#ifdef CONFIG_TOUCHSCREEN_SCROFF_VOLCTR
+	configure_sovc(d);
+#endif
+
 	ftm4_get_tci_info(dev);
 	ftm4_get_swipe_info(dev);
 	ftm4_get_lpwg_abs_info(dev);
@@ -2464,6 +2659,10 @@ static int ftm4_remove(struct device *dev)
 	TOUCH_TRACE();
 
 	pm_qos_remove_request(&d->pm_qos_req);
+
+#ifdef CONFIG_TOUCHSCREEN_SCROFF_VOLCTR
+	remove_sovc(d);
+#endif
 
 	return 0;
 }
@@ -3916,6 +4115,69 @@ static void ftm4_lpwg_abs_filter(struct device *dev, u8 touch_id)
 	ts->tdata[touch_id].y = new_y;
 }
 
+#ifdef CONFIG_TOUCHSCREEN_SCROFF_VOLCTR
+static void new_touch(int x, int y)
+{
+	tap_time_pre = ktime_to_ms(ktime_get_real());
+	x_pre = x;
+	y_pre = y;
+	touch_nr++;
+}
+
+static void doubletap2wake_reset(void)
+{
+	touch_nr = 0;
+	tap_time_pre = 0;
+	x_pre = 0;
+	y_pre = 0;
+}
+
+static void doubletap2wake_presspwr(struct work_struct * doubletap2wake_presspwr_work)
+{
+	if (!mutex_trylock(&pwrkeyworklock))
+		return;
+	input_event(doubletap2wake_pwrdev, EV_KEY, KEY_POWER, 1);
+	input_event(doubletap2wake_pwrdev, EV_SYN, 0, 0);
+	input_event(doubletap2wake_pwrdev, EV_KEY, KEY_POWER, 0);
+	input_event(doubletap2wake_pwrdev, EV_SYN, 0, 0);
+	mutex_unlock(&pwrkeyworklock);
+}
+static DECLARE_WORK(doubletap2wake_presspwr_work, doubletap2wake_presspwr);
+
+static void doubletap2wake_pwrtrigger(void)
+{
+	schedule_work(&doubletap2wake_presspwr_work);
+}
+
+static void detect_doubletap2wake(int x, int y)
+{
+	if (!is_touching) {
+		is_touching = true;
+
+		if (touch_nr == 0) {
+			new_touch(x, y);
+		} else if (touch_nr == 1) {
+			if (((calc_feather(x, x_pre) < DT2W_FEATHER) && (calc_feather(y, y_pre) < DT2W_FEATHER))
+			&& ((ktime_to_ms(ktime_get_real()) - tap_time_pre) < DT2W_TIME_GAP)) {
+				tap_time_pre = ktime_to_ms(ktime_get_real());
+				touch_nr++;
+			} else {
+				doubletap2wake_reset();
+				new_touch(x, y);
+			}
+		} else {
+			doubletap2wake_reset();
+			new_touch(x, y);
+		}
+
+		if (touch_nr > 1) {
+			doubletap2wake_pwrtrigger();
+			doubletap2wake_reset();
+		}
+	}
+}
+#endif
+
 static int ftm4_event_handler(struct device *dev, u8 *data, u8 left_event)
 {
 	struct touch_core_data *ts = to_touch_core(dev);
@@ -4009,7 +4271,20 @@ static int ftm4_event_handler(struct device *dev, u8 *data, u8 left_event)
 
 			if (d->lpwg_abs.enable)
 				ftm4_lpwg_abs_filter(dev, touch_id);
-
+#ifdef CONFIG_TOUCHSCREEN_SCROFF_VOLCTR
+			else if (sovc_switch && sovc_scr_suspended && !touch_suspended) {
+				if (swipe_tool_enabled) {
+					if (y >= lpwg_abs_start_y && y <= lpwg_abs_end_y)
+						ts->tdata[touch_id].y -= lpwg_abs_offset_y;
+					if (y >= sovc_ignore_start_y && y <= sovc_ignore_end_y)
+						sovc_ignore = true;
+					else
+						sovc_ignore = false;
+				}
+				if (lpwg_status)
+					detect_doubletap2wake(x, y);
+			}
+#endif
 			break;
 		case EVENTID_LEAVE_POINTER:
 			if (d->palm == PALM_PRESSED) {
@@ -4020,10 +4295,18 @@ static int ftm4_event_handler(struct device *dev, u8 *data, u8 left_event)
 
 			ts->new_mask &= ~(1 << touch_id);
 			ftm4_update_tcount(dev);
+#ifdef CONFIG_TOUCHSCREEN_SCROFF_VOLCTR
+			if (sovc_switch && sovc_scr_suspended &&
+			    !touch_suspended && lpwg_status)
+				is_touching = false;
+#endif
 			break;
 		case EVENTID_LPWG_EVENT:
-			ftm4_lpwg_event_handler(dev,
-					&data[event_num * FTS_EVENT_SIZE]);
+#ifdef CONFIG_TOUCHSCREEN_SCROFF_VOLCTR
+			if (!sovc_state_playing() || !registered)
+#endif
+				ftm4_lpwg_event_handler(dev,
+						&data[event_num * FTS_EVENT_SIZE]);
 			break;
 		case EVENTID_STATUS_EVENT:
 			ret = ftm4_status_event_handler(dev,
@@ -4224,7 +4507,7 @@ static ssize_t store_swipe_enable(struct device *dev,
 {
 	struct ftm4_data *d = to_ftm4_data(dev);
 	int value = 0;
-	u32 mask = SWIPE_UP_BIT | SWIPE_DOWN_BIT | SWIPE_LEFT_BIT | SWIPE_RIGHT_BIT;
+	u32 mask = SWIPE_UP_BIT;
 
 	TOUCH_TRACE();
 
@@ -4296,9 +4579,18 @@ static ssize_t store_swipe_tool(struct device *dev,
 		return count;
 	}
 
+#ifdef CONFIG_TOUCHSCREEN_SCROFF_VOLCTR
+	swipe_tool_enabled = enable;
+#endif
+
 	if (enable) {
 		end_x = start_x + width - 1;
 		end_y = start_y + height - 1;
+
+#ifdef CONFIG_TOUCHSCREEN_SCROFF_VOLCTR
+		sovc_ignore_start_y = start_y;
+		sovc_ignore_end_y = end_y;
+#endif
 
 		d->swipe.mode |= mask;
 
@@ -4321,6 +4613,9 @@ static ssize_t store_swipe_tool(struct device *dev,
 		d->swipe.info[SWIPE_L].start_area.y2 = end_y;
 	} else {
 		d->swipe.mode &= (~mask);
+#ifdef CONFIG_TOUCHSCREEN_SCROFF_VOLCTR
+		sovc_ignore = false;
+#endif
 	}
 
 	mutex_lock(&ts->lock);
@@ -4373,6 +4668,12 @@ static ssize_t store_lpwg_abs(struct device *dev,
 		TOUCH_E("invalid enable(%d)\n", enable);
 		return count;
 	}
+
+#ifdef CONFIG_TOUCHSCREEN_SCROFF_VOLCTR
+	lpwg_abs_offset_y = offset_y;
+	lpwg_abs_start_y = start_y;
+	lpwg_abs_end_y = start_y + height - 1;
+#endif
 
 	if (enable) {
 		end_x = start_x + width - 1;

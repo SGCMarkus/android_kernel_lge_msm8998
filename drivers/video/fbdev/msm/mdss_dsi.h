@@ -663,6 +663,14 @@ struct mdss_dsi_ctrl_pdata {
 	struct dsi_panel_cmds bist_on_cmds;
 	struct dsi_panel_cmds bist_off_cmds;
 #endif
+
+	struct notifier_block wake_notif;
+	struct task_struct *wake_thread;
+	struct completion wake_comp;
+	wait_queue_head_t wake_waitq;
+	atomic_t disp_is_on;
+	atomic_t needs_wake;
+	bool bl_high2bit;
 };
 
 struct dsi_status_data {

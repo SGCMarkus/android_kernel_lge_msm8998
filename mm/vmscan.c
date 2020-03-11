@@ -46,6 +46,7 @@
 #include <linux/oom.h>
 #include <linux/prefetch.h>
 #include <linux/printk.h>
+#include <linux/simple_lmk.h>
 
 #include <asm/tlbflush.h>
 #include <asm/div64.h>
@@ -267,10 +268,13 @@ EXPORT_SYMBOL(register_shrinker);
  */
 void unregister_shrinker(struct shrinker *shrinker)
 {
+	if (!shrinker->nr_deferred)
+		return;
 	down_write(&shrinker_rwsem);
 	list_del(&shrinker->list);
 	up_write(&shrinker_rwsem);
 	kfree(shrinker->nr_deferred);
+	shrinker->nr_deferred = NULL;
 }
 EXPORT_SYMBOL(unregister_shrinker);
 
@@ -3442,6 +3446,9 @@ static void kswapd_try_to_sleep(pg_data_t *pgdat, int order,
 {
 	long remaining = 0;
 	DEFINE_WAIT(wait);
+#ifdef CONFIG_ANDROID_SIMPLE_LMK
+	bool kswapd_slept = false;
+#endif
 
 	if (freezing(current) || kthread_should_stop())
 		return;
@@ -3451,6 +3458,11 @@ static void kswapd_try_to_sleep(pg_data_t *pgdat, int order,
 	/* Try to sleep for a short interval */
 	if (prepare_kswapd_sleep(pgdat, order, remaining,
 						balanced_classzone_idx)) {
+#ifdef CONFIG_ANDROID_SIMPLE_LMK
+		simple_lmk_stop_reclaim();
+		kswapd_slept = true;
+#endif
+
 		/*
 		 * Compaction records what page blocks it recently failed to
 		 * isolate pages from and skips them in the future scanning.
@@ -3493,6 +3505,11 @@ static void kswapd_try_to_sleep(pg_data_t *pgdat, int order,
 
 		set_pgdat_percpu_threshold(pgdat, calculate_pressure_threshold);
 	} else {
+#ifdef CONFIG_ANDROID_SIMPLE_LMK
+		/* Start reclaim when kswapd wakes and a wmark is hit quickly */
+		if (kswapd_slept)
+			simple_lmk_start_reclaim();
+#endif
 		if (remaining)
 			count_vm_event(KSWAPD_LOW_WMARK_HIT_QUICKLY);
 		else
